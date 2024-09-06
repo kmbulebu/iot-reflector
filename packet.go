@@ -12,7 +12,6 @@ type bonjourPacket struct {
 	srcMAC     *net.HardwareAddr
 	dstMAC     *net.HardwareAddr
 	isIPv6     bool
-	vlanTag    *uint16
 	isDNSQuery bool
 }
 
@@ -26,7 +25,6 @@ func parsePacketsLazily(source *gopacket.PacketSource) chan bonjourPacket {
 
 	go func() {
 		for packet := range source.Packets() {
-			tag := parseVLANTag(packet)
 
 			// Get source and destination mac addresses
 			srcMAC, dstMAC := parseEthernetLayer(packet)
@@ -42,7 +40,6 @@ func parsePacketsLazily(source *gopacket.PacketSource) chan bonjourPacket {
 			// Pass on the packet for its next adventure
 			packetChan <- bonjourPacket{
 				packet:     packet,
-				vlanTag:    tag,
 				srcMAC:     srcMAC,
 				dstMAC:     dstMAC,
 				isIPv6:     isIPv6,
@@ -58,13 +55,6 @@ func parseEthernetLayer(packet gopacket.Packet) (srcMAC, dstMAC *net.HardwareAdd
 	if parsedEth := packet.Layer(layers.LayerTypeEthernet); parsedEth != nil {
 		srcMAC = &parsedEth.(*layers.Ethernet).SrcMAC
 		dstMAC = &parsedEth.(*layers.Ethernet).DstMAC
-	}
-	return
-}
-
-func parseVLANTag(packet gopacket.Packet) (tag *uint16) {
-	if parsedTag := packet.Layer(layers.LayerTypeDot1Q); parsedTag != nil {
-		tag = &parsedTag.(*layers.Dot1Q).VLANIdentifier
 	}
 	return
 }
@@ -98,8 +88,7 @@ type packetWriter interface {
 	WritePacketData([]byte) error
 }
 
-func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, tag uint16, brMACAddress net.HardwareAddr) {
-	*bonjourPacket.vlanTag = tag
+func sendBonjourPacket(handle packetWriter, bonjourPacket *bonjourPacket, brMACAddress net.HardwareAddr) {
 	*bonjourPacket.srcMAC = brMACAddress
 
 	// Network devices may set dstMAC to the local MAC address
