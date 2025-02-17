@@ -1,4 +1,4 @@
-FROM ubuntu:jammy AS build
+FROM ubuntu:noble AS build
 
 ENV GO111MODULE=on
 
@@ -12,15 +12,13 @@ ADD *.go go.* /src/
 
 WORKDIR /src/
 
-#RUN go build -ldflags "-L /usr/lib/x86_64-linux-gnu -linkmode external -extldflags -static" -o /output/iot-reflector
-
 RUN go build -o /output/iot-reflector
 
 FROM scratch
 
 COPY --from=build /output/iot-reflector /iot-reflector
 
-# FROM ubuntu:jammy
+# FROM ubuntu:noble
 
 # RUN apt update && apt install -y libpcap0.8 && apt clean && rm -rf /var/cache/apt
 
