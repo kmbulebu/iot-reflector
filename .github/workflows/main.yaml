@@ -49,3 +49,10 @@ jobs:
         GOOS: linux
       run: |
         go build -o iot-reflector-$(uname -m)
+
+    # Save the binary as an artifact
+    - name: Upload artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: iot-reflector-${{ matrix.os }}
+        path: iot-reflector-*
