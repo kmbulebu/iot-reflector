@@ -25,7 +25,7 @@ func main() {
 	flag.Parse()
 
 	if len(*receiveIfArg) == 0 || len(*sendIfArg) == 0 {
-		fmt.Println("Usage: main.go -receiveIfArg <interface> -sendIfArg <interface1,interface2,...>")
+		fmt.Println("Usage: main.go -receiveInterface <interface> -sendInterfaces <interface1,interface2,...>")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
@@ -33,11 +33,11 @@ func main() {
 	// Split the comma-separated list into individual interfaces
 	sendIfs := strings.Split(*sendIfArg, ",")
 
-	// Get a handle on the receivng network interface
+	// Get a handle on the receiving network interface
 	receiver, err := pcap.OpenLive(*receiveIfArg, 65536, true, time.Second)
 	log.Printf("Receiving mDNS packets on interface: %v", *receiveIfArg)
 	if err != nil {
-		log.Fatalf("Could not find network interface: %v", *receiveIfArg)
+		log.Fatalf("Encountered a problem while opening interface: %v. %v", *receiveIfArg, err)
 	}
 
 	// Get a handle on the sending network interfaces
@@ -56,15 +56,6 @@ func main() {
 		go debugServer(6060)
 	}
 
-	// Get a handle on the network interface
-
-	// // Get the local MAC address, to filter out Bonjour packet generated locally
-	// intf, err := net.InterfaceByName(cfg.NetInterface)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-	// brMACAddress := intf.HardwareAddr
-
 	// Filter mDNS traffic
 	filter := "dst net (224.0.0.251 or ff02::fb) and udp dst port 5353"
 	err = receiver.SetBPFFilter(filter)
@@ -72,95 +63,81 @@ func main() {
 		log.Fatalf("Could not apply filter on network interface: %v", err)
 	}
 
-	// Get a channel of Bonjour packets to process
+	// Get a channel of packets to process
 	decoder := gopacket.DecodersByLayerName["Ethernet"]
 	source := gopacket.NewPacketSource(receiver, decoder)
-	bonjourPackets := parsePacketsLazily(source)
 
-	// Process Bonjours packets
-	for bonjourPacket := range bonjourPackets {
-		//fmt.Println(bonjourPacket.packet.Dump())
+	// Process packets
+	source.DecodeOptions = gopacket.DecodeOptions{Lazy: true}
 
-		// Assuming bonjourPacket and packet are already defined and initialized
-		applicationLayer := bonjourPacket.packet.ApplicationLayer()
+	for readPacket := range source.Packets() {
+		applicationLayer := readPacket.ApplicationLayer()
 		if applicationLayer != nil {
 
 			// Decode the payload as DNS
-			packet := gopacket.NewPacket(applicationLayer.Payload(), layers.LayerTypeDNS, gopacket.Default)
-			if dnsLayer := packet.Layer(layers.LayerTypeDNS); dnsLayer != nil {
+			newPacket := gopacket.NewPacket(applicationLayer.Payload(), layers.LayerTypeDNS, gopacket.Default)
+			if dnsLayer := newPacket.Layer(layers.LayerTypeDNS); dnsLayer != nil {
 				dns, _ := dnsLayer.(*layers.DNS)
-				fmt.Println("DNS Packet:")
-				fmt.Printf("ID: %d\n", dns.ID)
-				fmt.Printf("Questions: %d\n", dns.QDCount)
-				fmt.Printf("Answers: %d\n", dns.ANCount)
-				for _, question := range dns.Questions {
-					fmt.Printf("Question: %s\n", string(question.Name))
-				}
+
+				// Filter out link-local questions
+				dns.Questions = filterOutLinkLocalQuestions(dns.Questions)
 
 				// Filter out AAAA records from Answers, Authorities, and Additionals
 				dns.Answers = filterOutLinkLocalAAAAAndPTR(dns.Answers)
 				dns.Authorities = filterOutLinkLocalAAAAAndPTR(dns.Authorities)
 				dns.Additionals = filterOutLinkLocalAAAAAndPTR(dns.Additionals)
 
-				// Filter out records with Type = Unknown from Answers, Authorities, and Additionals
+				// Filter out records with Type = Uknown from Answers, Authorities, and Additionals
 				dns.Answers = filterOutUnknownType(dns.Answers)
 				dns.Authorities = filterOutUnknownType(dns.Authorities)
 				dns.Additionals = filterOutUnknownType(dns.Additionals)
 
-				for _, answer := range dns.Answers {
-					switch answer.Type {
-					case layers.DNSTypeSRV:
-						fmt.Printf("SRV Answer: %s %s %d %d %d %s\n", string(answer.Name), answer.Type, answer.SRV.Priority, answer.SRV.Weight, answer.SRV.Port, string(answer.SRV.Name))
-					case layers.DNSTypeTXT:
-						fmt.Printf("TXT Answer: %s %s %s\n", string(answer.Name), answer.Type, answer.TXTs)
-					case layers.DNSTypeA, layers.DNSTypeAAAA:
-						fmt.Printf("IP Answer: %s %s %s\n", string(answer.Name), answer.Type, answer.IP)
-					case layers.DNSTypePTR:
-						fmt.Printf("PTR Answer: %s %s %s\n", string(answer.Name), answer.Type, answer.PTR)
-					default:
-						fmt.Printf("Answer: %s %s %s %s %s\n", string(answer.Name), answer.Type, answer.IP, answer.PTR, answer.Class)
-					}
+				// Create a new Ethernet layer with the source MAC address of the received packet
+				ethLayer := readPacket.Layer(layers.LayerTypeEthernet).(*layers.Ethernet)
+
+				// Get the IP layer from the received packet.
+				var ipLayer gopacket.Layer
+				if ethLayer.EthernetType == layers.EthernetTypeIPv6 {
+					ipLayer = readPacket.Layer(layers.LayerTypeIPv6)
+				} else {
+					ipLayer = readPacket.Layer(layers.LayerTypeIPv4)
 				}
 
-				for _, authority := range dns.Authorities {
-					switch authority.Type {
-					case layers.DNSTypeSRV:
-						fmt.Printf("SRV Authority: %s %s %d %d %d %s\n", string(authority.Name), authority.Type, authority.SRV.Priority, authority.SRV.Weight, authority.SRV.Port, string(authority.SRV.Name))
-					case layers.DNSTypeTXT:
-						fmt.Printf("TXT Authority: %s %s %s\n", string(authority.Name), authority.Type, authority.TXTs)
-					case layers.DNSTypeA, layers.DNSTypeAAAA:
-						fmt.Printf("IP Authority: %s %s %s\n", string(authority.Name), authority.Type, authority.IP)
-					case layers.DNSTypePTR:
-						fmt.Printf("PTR Authority: %s %s %s\n", string(authority.Name), authority.Type, authority.PTR)
-					default:
-						fmt.Printf("Authority: %s %s %s %s\n", string(authority.Name), authority.Type, authority.IP, authority.Class)
-					}
-				}
+				// Get the UDP layer from the received packet
+				udpLayer := readPacket.Layer(layers.LayerTypeUDP)
 
-				for _, additional := range dns.Additionals {
-					switch additional.Type {
-					case layers.DNSTypeSRV:
-						fmt.Printf("SRV Additional: %s %s %d %d %d %s\n", string(additional.Name), additional.Type, additional.SRV.Priority, additional.SRV.Weight, additional.SRV.Port, string(additional.SRV.Name))
-					case layers.DNSTypeTXT:
-						fmt.Printf("TXT Additional: %s %s %s\n", string(additional.Name), additional.Type, additional.TXTs)
-					case layers.DNSTypeA, layers.DNSTypeAAAA:
-						fmt.Printf("IP Additional: %s %s %s\n", string(additional.Name), additional.Type, additional.IP)
-					case layers.DNSTypePTR:
-						fmt.Printf("PTR Additional: %s %s %s\n", string(additional.Name), additional.Type, additional.PTR)
-					default:
-						fmt.Printf("Additional: %s %s %s %s\n", string(additional.Name), additional.Type, additional.IP, additional.Class)
-					}
-				}
+				// Serialize the packet with the new Ethernet layer
+				buf := gopacket.NewSerializeBuffer()
+				opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
+				if ipLayer != nil && udpLayer != nil {
+					// Set the network layer for checksum computation
+					if networkLayer, ok := ipLayer.(gopacket.NetworkLayer); ok {
+						udpLayer.(*layers.UDP).SetNetworkLayerForChecksum(networkLayer)
+					}
+
+					err := gopacket.SerializeLayers(buf, opts, ethLayer, ipLayer.(gopacket.SerializableLayer), udpLayer.(gopacket.SerializableLayer), newPacket.ApplicationLayer().(gopacket.SerializableLayer))
+					if err != nil {
+						log.Fatalf("Failed to serialize packet: %v", err)
+					}
+
+					// Build a new packet suitable for sending.
+					packetToSend := gopacket.NewPacket(buf.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
+
+					// Send the packet on all the sending interfaces
+					for _, sender := range senders {
+						buf := gopacket.NewSerializeBuffer()
+						gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, packetToSend)
+						sender.WritePacketData(buf.Bytes())
+					}
+				} else {
+					log.Println("IP layer or UDP layer not found in the packet")
+				}
 			} else {
 				fmt.Println("No DNS layer found")
 			}
-			bonjourPacket.packet = packet
 		} else {
 			fmt.Println("No application layer found")
-		}
-		for _, sender := range senders {
-			go sendBonjourPacket(sender, &bonjourPacket, *bonjourPacket.srcMAC)
 		}
 
 	}
@@ -173,14 +150,33 @@ func debugServer(port int) {
 	}
 }
 
+// Helper function to filter out link-local questions
+func filterOutLinkLocalQuestions(questions []layers.DNSQuestion) []layers.DNSQuestion {
+	filteredQuestions := []layers.DNSQuestion{}
+	for _, question := range questions {
+		if strings.Contains(string(question.Name), "fe80") {
+			log.Printf("Discarding question with link-local IPv6 address: %v", string(question.Name))
+			continue
+		}
+		filteredQuestions = append(filteredQuestions, question)
+	}
+	return filteredQuestions
+}
+
 // Helper function to filter out AAAA and PTR records with link-local IPv6 addresses
 func filterOutLinkLocalAAAAAndPTR(records []layers.DNSResourceRecord) []layers.DNSResourceRecord {
 	filteredRecords := []layers.DNSResourceRecord{}
 	for _, record := range records {
 		if record.Type == layers.DNSTypeAAAA && isLinkLocalIPv6(record.IP) {
+			log.Printf("Discarding AAAA record with link-local IPv6 address: %v", record.IP)
 			continue
 		}
 		if record.Type == layers.DNSTypePTR && strings.HasSuffix(string(record.Name), "0.8.E.F.ip6.arpa") {
+			log.Printf("Discarding PTR record with link-local IPv6 address: %v", string(record.Name))
+			continue
+		}
+		if record.Type == layers.DNSTypePTR && strings.Contains(string(record.PTR), "@fe80") {
+			log.Printf("Discarding PTR record with link-local IPv6 address: %v", string(record.PTR))
 			continue
 		}
 		filteredRecords = append(filteredRecords, record)
@@ -192,9 +188,11 @@ func filterOutLinkLocalAAAAAndPTR(records []layers.DNSResourceRecord) []layers.D
 func filterOutUnknownType(records []layers.DNSResourceRecord) []layers.DNSResourceRecord {
 	filteredRecords := []layers.DNSResourceRecord{}
 	for _, record := range records {
-		if record.Type.String() != "Unknown" {
-			filteredRecords = append(filteredRecords, record)
+		if record.Type.String() == "Unknown" {
+			log.Printf("Discarding record with unknown type: %v", string(record.Data))
+			continue
 		}
+		filteredRecords = append(filteredRecords, record)
 	}
 	return filteredRecords
 }

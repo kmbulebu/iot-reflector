@@ -9,10 +9,13 @@ iot-reflector allows mDNS/Bonjour devices such as printers, Chromecasts or Spoti
 Iot-reflector works by intercepting all mDNS traffic on one interface and re-sends them on one or more other network interfaces.
 
 The mDNS packets are modified before reflection:
+- Questions that contain IPv6 link local addresses in them are removed.
 - IPv6 link local answers are removed.
 - NSEC answers are removed.
 
 # Debugging & Profiling
+
+If developing on MacOS, first install Wireshark to setup your user with the ability to use libpcap.
 
 A pprof server will listen on port `6060` if the you use the `-debug` flag.
 

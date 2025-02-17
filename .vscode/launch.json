@@ -2,14 +2,18 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch with sudo",
+            "name": "iot-reflector",
             "type": "go",
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}",
             "env": {},
-            "args": [],
-            "preLaunchTask": "sudo",
+            "args": [
+                "-receiveInterface",
+                "en0",
+                "-sendInterfaces",
+                "en3"
+            ],
             "showLog": true
         }
     ]
