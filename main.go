@@ -35,20 +35,35 @@ func main() {
 
 	// Get a handle on the receiving network interface
 	receiver, err := pcap.OpenLive(*receiveIfArg, 65536, true, time.Second)
-	log.Printf("Receiving mDNS packets on interface: %v", *receiveIfArg)
 	if err != nil {
 		log.Fatalf("Encountered a problem while opening interface: %v. %v", *receiveIfArg, err)
 	}
 
+	// Get the MAC address of the receiving interface
+	recvIface, err := net.InterfaceByName(*receiveIfArg)
+	if err != nil {
+		log.Fatalf("Could not get interface by name: %v", *receiveIfArg)
+	}
+	recvMAC := recvIface.HardwareAddr
+
+	log.Printf("Receiving mDNS packets on interface: %v with MAC address: %v", recvIface, recvIface.HardwareAddr)
+
 	// Get a handle on the sending network interfaces
-	senders := []*pcap.Handle{}
+	senders := make(map[*pcap.Handle]net.HardwareAddr)
 	for _, sendIf := range sendIfs {
 		sender, err := pcap.OpenLive(sendIf, 65536, true, time.Second)
 		if err != nil {
 			log.Fatalf("Could not find network interface: %v", sendIf)
 		}
-		senders = append(senders, sender)
-		log.Printf("Sending mDNS packets on interface: %v", sendIf)
+
+		// Get the MAC address of the sending interface
+		iface, err := net.InterfaceByName(sendIf)
+		if err != nil {
+			log.Fatalf("Could not get interface by name: %v", sendIf)
+		}
+
+		log.Printf("Sending mDNS packets on interface: %v with MAC address: %v", sendIf, iface.HardwareAddr)
+		senders[sender] = iface.HardwareAddr
 	}
 
 	// Start debug server
@@ -57,7 +72,7 @@ func main() {
 	}
 
 	// Filter mDNS traffic
-	filter := "dst net (224.0.0.251 or ff02::fb) and udp dst port 5353"
+	filter := fmt.Sprintf("dst net (224.0.0.251 or ff02::fb) and udp dst port 5353 and not ether src %s", recvMAC)
 	err = receiver.SetBPFFilter(filter)
 	if err != nil {
 		log.Fatalf("Could not apply filter on network interface: %v", err)
@@ -125,7 +140,12 @@ func main() {
 					packetToSend := gopacket.NewPacket(buf.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
 
 					// Send the packet on all the sending interfaces
-					for _, sender := range senders {
+					for sender, senderMacAddr := range senders {
+						// Modify the Ethernet layer's source MAC address
+						if ethLayer != nil {
+							ethLayer.SrcMAC = senderMacAddr
+						}
+
 						buf := gopacket.NewSerializeBuffer()
 						gopacket.SerializePacket(buf, gopacket.SerializeOptions{}, packetToSend)
 						sender.WritePacketData(buf.Bytes())
